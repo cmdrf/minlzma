@@ -61,7 +61,6 @@ typedef struct _CONTAINER_STATE
 CONTAINER_STATE Container;
 #endif
 
-#ifdef MINLZ_META_CHECKS
 bool
 XzDecodeVli (
     vli_type* Vli
@@ -110,6 +109,7 @@ XzDecodeVli (
     return true;
 }
 
+#ifdef MINLZ_META_CHECKS
 bool
 XzDecodeIndex (
     void
@@ -393,44 +393,70 @@ XzDecodeBlockHeader (
     void
     )
 {
-    PXZ_BLOCK_HEADER blockHeader;
-#ifdef MINLZ_META_CHECKS
-    uint32_t dictionarySize;
-#endif
+	// Record current position
+	const uint8_t* blockHeaderStart;
+	BfSeek(0, &blockHeaderStart);
     //
-    // Seek past the header, making sure we have space in the input stream. If
-    // the header indicates a size of 0, then this is a blockless (empty) file
+	// If the header indicates a size of 0, then this is a blockless (empty) file
     // and this is actually an index. Undo the seek so we can parse the index.
-    //
-    if (!BfSeek(sizeof(*blockHeader), (const uint8_t**)&blockHeader) ||
-        (blockHeader->Size == 0))
-    {
-        BfSeek((uint32_t)(-(uint16_t)sizeof(*blockHeader)),
-               (const uint8_t**)&blockHeader);
-        return false;
-    }
+	//
+	uint8_t headerSize;
+	if (!BfRead(&headerSize) || headerSize == 0)
+	{
+		const uint8_t* dummy;
+		BfSeek((uint32_t)(-(uint16_t)sizeof(headerSize)), &dummy);
+		return false;
+	}
+	const uint32_t decodedHeaderSize = (headerSize + 1) * 4;
+
 #ifdef MINLZ_META_CHECKS
-    //
-    // Validate that the size of the header is what we expect
-    //
-    Container.HeaderSize = (blockHeader->Size + 1) * 4;
-    if (Container.HeaderSize != sizeof(*blockHeader))
-    {
-        return false;
-    }
+	Container.HeaderSize = decodedHeaderSize;
+#endif
 
-    //
-    // Validate that no additional flags or filters are enabled
-    //
-    if (blockHeader->u.Flags != 0)
-    {
-        return false;
-    }
+	uint8_t flags;
+	if (!BfRead(&flags))
+	{
+		return false;
+	}
 
+	if(flags & 0x40)
+	{
+		vli_type compressedSize;
+		if(!XzDecodeVli (&compressedSize))
+			return false;
+	}
+
+	if(flags & 0x80)
+	{
+		vli_type uncompressedSize;
+		if(!XzDecodeVli (&uncompressedSize))
+			return false;
+	}
+
+	uint8_t filterId;
+	if(!BfRead (&filterId))
+		return false;
+	uint8_t filterPropertiesSize;
+	if(!BfRead (&filterPropertiesSize))
+		return false;
+	uint8_t filterProperties;
+	if(!BfRead (&filterProperties))
+		return false;
+
+	// Skip padding:
+	const uint8_t* blockHeaderPayloadEnd;
+	BfSeek(0, &blockHeaderPayloadEnd);
+	const uint32_t padSize = decodedHeaderSize - (blockHeaderPayloadEnd - blockHeaderStart);
+
+	const uint32_t* crc;
+	if(!BfSeek(padSize, (const uint8_t**)&crc))
+		return false;
+
+#if MINLZ_META_CHECKS
     //
     // Validate that the only filter is the LZMA2 filter
     //
-    if (blockHeader->LzmaFlags.Id != k_XzLzma2FilterIdentifier)
+	if (filterId != k_XzLzma2FilterIdentifier)
     {
         return false;
     }
@@ -438,8 +464,7 @@ XzDecodeBlockHeader (
     //
     // With the expected number of property bytes
     //
-    if (blockHeader->LzmaFlags.Size
-        != sizeof(blockHeader->LzmaFlags.u.Properties))
+	if (filterPropertiesSize != 1)
     {
         return false;
     }
@@ -457,8 +482,7 @@ XzDecodeBlockHeader (
     // file. If callers pass in a buffer size that's too small, decoding will
     // fail at later stages anyway, and that's incorrect use of minlzlib.
     //
-    dictionarySize = blockHeader->LzmaFlags.u.s.DictionarySize;
-    if (dictionarySize > 39)
+	if (filterProperties > 39)
     {
         return false;
     }
@@ -466,9 +490,7 @@ XzDecodeBlockHeader (
     //
     // Compute the header's CRC32 and make sure it's not corrupted
     //
-    if (Crc32(blockHeader,
-              Container.HeaderSize - sizeof(blockHeader->Crc32)) !=
-        blockHeader->Crc32)
+	if (Crc32(blockHeaderStart, decodedHeaderSize) != *crc)
     {
         Container.ChecksumError = true;
     }
