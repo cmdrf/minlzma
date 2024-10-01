@@ -446,10 +446,12 @@ XzDecodeBlockHeader (
 	// Skip padding:
 	const uint8_t* blockHeaderPayloadEnd;
 	BfSeek(0, &blockHeaderPayloadEnd);
-	const uint32_t padSize = decodedHeaderSize - (blockHeaderPayloadEnd - blockHeaderStart);
+	const uint32_t padSize = decodedHeaderSize - (blockHeaderPayloadEnd - blockHeaderStart) - 4;
 
 	const uint32_t* crc;
 	if(!BfSeek(padSize, (const uint8_t**)&crc))
+		return false;
+	if(!BfSeek(4, (const uint8_t**)&crc))
 		return false;
 
 #if MINLZ_META_CHECKS
@@ -490,7 +492,7 @@ XzDecodeBlockHeader (
     //
     // Compute the header's CRC32 and make sure it's not corrupted
     //
-	if (Crc32(blockHeaderStart, decodedHeaderSize) != *crc)
+	if (Crc32(blockHeaderStart, decodedHeaderSize - 4) != *crc)
     {
         Container.ChecksumError = true;
     }
